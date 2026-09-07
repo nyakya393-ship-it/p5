@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <meta
+        name="theme-color"
+        content="#0b0e12"
+    >
+
+    <title>
+        Splatoon 3 ブキ性能アナライザー
+    </title>
+
+    <link
+        rel="stylesheet"
+        href="style.css"
+    >
+
+</head>
+
+
+<body>
+
+<header class="header">
+
+    <div class="header-title">
+
+        <div class="eyebrow">
+            SPLATOON 3
+        </div>
+
+        <h1>
+            ブキ性能アナライザー
+        </h1>
+
+    </div>
+
+    <div
+        id="dataStatus"
+        class="data-status"
+    >
+        初期化中…
+    </div>
+
+</header>
+
+
+<main class="container">
+
+    <section class="control-card">
+
+        <input
+            id="search"
+            type="search"
+            placeholder="ブキ名を検索"
+            autocomplete="off"
+        >
+
+        <div
+            id="categories"
+            class="categories"
+        ></div>
+
+    </section>
+
+
+    <div class="main-layout">
+
+
+        <aside class="weapon-panel">
+
+            <div class="panel-header">
+
+                <h2>
+                    ブキ一覧
+                </h2>
+
+                <span id="weaponCount">
+                    0
+                </span>
+
+            </div>
+
+
+            <div
+                id="weaponList"
+                class="weapon-list"
+            ></div>
+
+        </aside>
+
+
+        <section
+            id="detail"
+            class="detail"
+        >
+
+            <div class="empty">
+
+                <div class="empty-title">
+                    ブキを選択してください
+                </div>
+
+                <div class="empty-text">
+                    選択したブキの性能データを取得します
+                </div>
+
+            </div>
+
+        </section>
+
+
+    </div>
+
+</main>
+
+
+<script src="app.js"></script>
+
+</body>
+
+</html>
