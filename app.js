@@ -1,66 +1,1556 @@
-// =========================================================
-// Splatoon 3 Weapon Analyzer
-// Lazy Loading + IndexedDB Cache
-// =========================================================
-
+/* =========================================================
+   Splatoon 3 Weapon Analyzer
+   WikiWiki lazy loading + IndexedDB cache
+========================================================= */
 
 const READER_API = "https://r.jina.ai/";
+const WIKI_BASE = "https://wikiwiki.jp/splatoon3mix/";
 
-const DB_NAME =
-    "splatoon3_weapon_analyzer";
-
+const DB_NAME = "splatoon3_weapon_analyzer";
 const DB_VERSION = 1;
-
 const STORE_NAME = "weapons";
 
-
-let db = null;
-
 let categories = [];
-
 let weapons = [];
+let currentCategory = "all";
+let currentWeapon = null;
 
-let currentCategory =
-    "すべて";
+/* =========================================================
+   DOM
+========================================================= */
 
-let currentWeapon =
-    null;
+const categoryList = document.getElementById("categoryList");
+const weaponList = document.getElementById("weaponList");
+const searchInput = document.getElementById("searchInput");
+const statusText = document.getElementById("statusText");
+const detail = document.getElementById("weaponDetail");
 
+/* =========================================================
+   INIT
+========================================================= */
 
-// =========================================================
-// DOM
-// =========================================================
+document.addEventListener("DOMContentLoaded", async () => {
+    try {
+        await openDB();
+        await loadCategories();
+        setupEvents();
 
-const $ = selector =>
-    document.querySelector(
-        selector
+        setStatus("カテゴリを選択してください");
+    } catch (error) {
+        console.error(error);
+        setStatus("初期化に失敗しました");
+    }
+});
+
+/* =========================================================
+   EVENTS
+========================================================= */
+
+function setupEvents() {
+
+    if (searchInput) {
+        searchInput.addEventListener("input", () => {
+            renderWeaponList();
+        });
+    }
+}
+
+/* =========================================================
+   STATUS
+========================================================= */
+
+function setStatus(text) {
+    if (statusText) {
+        statusText.textContent = text;
+    }
+}
+
+/* =========================================================
+   CATEGORIES
+========================================================= */
+
+async function loadCategories() {
+
+    const response = await fetch("./data/categories.json", {
+        cache: "no-cache"
+    });
+
+    if (!response.ok) {
+        throw new Error("categories.json を読み込めません");
+    }
+
+    categories = await response.json();
+
+    renderCategories();
+}
+
+/* =========================================================
+   CATEGORY UI
+========================================================= */
+
+function renderCategories() {
+
+    if (!categoryList) return;
+
+    categoryList.innerHTML = "";
+
+    const allButton = document.createElement("button");
+
+    allButton.className =
+        currentCategory === "all"
+            ? "category-button active"
+            : "category-button";
+
+    allButton.textContent = "すべて";
+
+    allButton.addEventListener("click", async () => {
+        currentCategory = "all";
+
+        updateCategoryButtons();
+
+        await loadAllCategories();
+    });
+
+    categoryList.appendChild(allButton);
+
+    categories.forEach((category, index) => {
+
+        const button = document.createElement("button");
+
+        button.className =
+            currentCategory === index
+                ? "category-button active"
+                : "category-button";
+
+        button.textContent = category.name;
+
+        button.addEventListener("click", async () => {
+
+            currentCategory = index;
+
+            updateCategoryButtons();
+
+            await loadCategory(category);
+        });
+
+        categoryList.appendChild(button);
+    });
+}
+
+function updateCategoryButtons() {
+
+    const buttons =
+        categoryList.querySelectorAll(".category-button");
+
+    buttons.forEach((button, index) => {
+
+        const active =
+            currentCategory === "all"
+                ? index === 0
+                : index === currentCategory + 1;
+
+        button.classList.toggle("active", active);
+    });
+}
+
+/* =========================================================
+   LOAD ALL
+========================================================= */
+
+async function loadAllCategories() {
+
+    weapons = [];
+
+    weaponList.innerHTML = "";
+
+    setStatus("武器一覧を取得中...");
+
+    for (const category of categories) {
+
+        try {
+
+            const list =
+                await getCategoryWeapons(category);
+
+            weapons.push(...list);
+
+        } catch (error) {
+
+            console.error(
+                "カテゴリ取得失敗:",
+                category.name,
+                error
+            );
+        }
+    }
+
+    weapons = uniqueWeapons(weapons);
+
+    renderWeaponList();
+
+    setStatus(`${weapons.length}種類の武器`);
+}
+
+/* =========================================================
+   LOAD CATEGORY
+========================================================= */
+
+async function loadCategory(category) {
+
+    weapons = [];
+
+    weaponList.innerHTML = "";
+
+    setStatus(
+        `${category.name}の武器一覧を取得中...`
     );
 
+    try {
 
-const weaponList =
-    $("#weaponList");
+        weapons =
+            await getCategoryWeapons(category);
 
-const detail =
-    $("#detail");
+        weapons =
+            uniqueWeapons(weapons);
 
-const categoriesElement =
-    $("#categories");
+        renderWeaponList();
 
-const searchInput =
-    $("#search");
+        setStatus(
+            `${category.name}：${weapons.length}種類`
+        );
 
-const weaponCount =
-    $("#weaponCount");
+    } catch (error) {
 
-const dataStatus =
-    $("#dataStatus");
+        console.error(error);
 
+        setStatus(
+            "武器一覧の取得に失敗しました"
+        );
 
-// =========================================================
-// IndexedDB
-// =========================================================
+        weaponList.innerHTML = `
+            <div class="error-box">
+                武器一覧を取得できませんでした。<br>
+                もう一度カテゴリを選択してください。
+            </div>
+        `;
+    }
+}
 
-function openDatabase(){
+/* =========================================================
+   CATEGORY PAGE
+========================================================= */
+
+async function getCategoryWeapons(category) {
+
+    const text =
+        await fetchWikiPage(category.url);
+
+    return parseCategoryPage(text);
+}
+
+/* =========================================================
+   WIKIWIKI FETCH
+========================================================= */
+
+async function fetchWikiPage(url) {
+
+    const readerURL =
+        READER_API + url;
+
+    const response =
+        await fetch(readerURL, {
+            method: "GET",
+            cache: "no-cache"
+        });
+
+    if (!response.ok) {
+
+        throw new Error(
+            `Reader HTTP ${response.status}`
+        );
+    }
+
+    return await response.text();
+}
+
+/* =========================================================
+   CATEGORY PARSER
+========================================================= */
+
+function parseCategoryPage(text) {
+
+    const result = [];
+
+    /*
+       WikiWikiはPukiWiki形式。
+
+       例：
+
+       |&attachref(icon/スプラシューター.png,...);
+       スプラシューター|2.6|36.0...
+
+       または
+
+       |&attachref(...);
+       [[ヒーローシューター
+       レプリカ>ブキ/ヒーローシューター レプリカ]]|...
+    */
+
+    const lines =
+        text.split(/\r?\n/);
+
+    for (let line of lines) {
+
+        if (!line.includes("attachref")) {
+            continue;
+        }
+
+        if (!line.includes("icon/")) {
+            continue;
+        }
+
+        let name = null;
+        let pagePath = null;
+
+        /* ---------------------------------------------
+           [[表示名>ブキ/ページ名]]
+        --------------------------------------------- */
+
+        const linked =
+            line.match(
+                /\[\[([\s\S]*?)>(ブキ\/[^|\]]+)\]\]/
+            );
+
+        if (linked) {
+
+            name =
+                cleanWeaponName(linked[1]);
+
+            pagePath =
+                linked[2];
+
+        } else {
+
+            /* -----------------------------------------
+               attachref(...);武器名
+            ----------------------------------------- */
+
+            const attach =
+                line.match(
+                    /attachref\([^)]*\);([^|]+)/i
+                );
+
+            if (!attach) {
+                continue;
+            }
+
+            name =
+                cleanWeaponName(
+                    attach[1]
+                );
+
+            if (!name) {
+                continue;
+            }
+
+            pagePath =
+                "ブキ/" + name;
+        }
+
+        /* ---------------------------------------------
+           除外
+        --------------------------------------------- */
+
+        if (!name) {
+            continue;
+        }
+
+        if (
+            name === "メインウェポン" ||
+            name === "サブウェポン" ||
+            name === "スペシャルウェポン"
+        ) {
+            continue;
+        }
+
+        if (
+            name.includes("種について") ||
+            name.includes("属について")
+        ) {
+            continue;
+        }
+
+        /* ---------------------------------------------
+           URL
+        --------------------------------------------- */
+
+        const url =
+            WIKI_BASE +
+            pagePath
+                .split("/")
+                .map(part => encodeURIComponent(part))
+                .join("/");
+
+        result.push({
+            name,
+            url
+        });
+    }
+
+    /*
+       PukiWikiの表では一部武器が
+       attachref + 通常テキストなので、
+       念のため直接のブキ/リンクも探す。
+    */
+
+    const directLinks =
+        text.matchAll(
+            /\[\[([^\]]+?)>(ブキ\/[^|\]]+)\]\]/g
+        );
+
+    for (const match of directLinks) {
+
+        let name =
+            cleanWeaponName(match[1]);
+
+        const pagePath =
+            match[2];
+
+        if (!name) continue;
+
+        if (
+            name.includes("ブラスター") === false &&
+            name.includes("シューター") === false &&
+            name.includes("ローラー") === false &&
+            name.includes("チャージャー") === false &&
+            name.includes("スロッシャー") === false &&
+            name.includes("スピナー") === false &&
+            name.includes("マニューバー") === false &&
+            name.includes("シェルター") === false &&
+            name.includes("ストリンガー") === false &&
+            name.includes("ワイパー") === false &&
+            name.includes("フデ") === false
+        ) {
+            /*
+               名前だけで判定できない武器もあるため、
+               URLが「ブキ/」なら追加候補にする。
+            */
+        }
+
+        const url =
+            WIKI_BASE +
+            pagePath
+                .split("/")
+                .map(part => encodeURIComponent(part))
+                .join("/");
+
+        result.push({
+            name,
+            url
+        });
+    }
+
+    return uniqueWeapons(result);
+}
+
+/* =========================================================
+   CLEAN NAME
+========================================================= */
+
+function cleanWeaponName(name) {
+
+    return name
+        .replace(/&br;/g, "")
+        .replace(/<br\s*\/?>/gi, "")
+        .replace(/&color\([^)]*\)\{/g, "")
+        .replace(/\}/g, "")
+        .replace(/&size\([^)]*\)\{/g, "")
+        .replace(/&ref\([^)]*\);/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+/* =========================================================
+   UNIQUE
+========================================================= */
+
+function uniqueWeapons(list) {
+
+    const map =
+        new Map();
+
+    for (const weapon of list) {
+
+        if (!weapon.name) {
+            continue;
+        }
+
+        if (!weapon.url) {
+            continue;
+        }
+
+        const key =
+            weapon.url;
+
+        if (!map.has(key)) {
+            map.set(key, weapon);
+        }
+    }
+
+    return Array.from(map.values());
+}
+
+/* =========================================================
+   WEAPON LIST
+========================================================= */
+
+function renderWeaponList() {
+
+    if (!weaponList) return;
+
+    weaponList.innerHTML = "";
+
+    const keyword =
+        searchInput
+            ? searchInput.value
+                .trim()
+                .toLowerCase()
+            : "";
+
+    const filtered =
+        weapons.filter(weapon => {
+
+            if (!keyword) {
+                return true;
+            }
+
+            return weapon.name
+                .toLowerCase()
+                .includes(keyword);
+        });
+
+    if (filtered.length === 0) {
+
+        weaponList.innerHTML = `
+            <div class="empty-box">
+                武器が見つかりません
+            </div>
+        `;
+
+        return;
+    }
+
+    filtered.forEach(weapon => {
+
+        const button =
+            document.createElement("button");
+
+        button.className =
+            "weapon-item";
+
+        button.innerHTML = `
+            <div class="weapon-item-name">
+                ${escapeHTML(weapon.name)}
+            </div>
+            <div class="weapon-item-arrow">
+                ›
+            </div>
+        `;
+
+        button.addEventListener(
+            "click",
+            () => {
+                selectWeapon(weapon);
+            }
+        );
+
+        weaponList.appendChild(button);
+    });
+}
+
+/* =========================================================
+   SELECT WEAPON
+========================================================= */
+
+async function selectWeapon(weapon) {
+
+    currentWeapon = weapon;
+
+    detail.innerHTML = `
+        <div class="loading-box">
+            <div class="loading-title">
+                ${escapeHTML(weapon.name)}
+            </div>
+            <div>
+                データを取得しています...
+            </div>
+        </div>
+    `;
+
+    setStatus(
+        `${weapon.name}を読み込み中...`
+    );
+
+    /* ---------------------------------------------
+       CACHE
+    --------------------------------------------- */
+
+    const cached =
+        await getCachedWeapon(
+            weapon.url
+        );
+
+    if (cached) {
+
+        console.log(
+            "IndexedDB cache:",
+            weapon.name
+        );
+
+        renderWeaponDetail(cached);
+
+        setStatus(
+            `${weapon.name}：キャッシュから表示`
+        );
+
+        return;
+    }
+
+    /* ---------------------------------------------
+       WIKI
+    --------------------------------------------- */
+
+    try {
+
+        const text =
+            await fetchWikiPage(
+                weapon.url
+            );
+
+        const data =
+            parseWeaponPage(
+                text,
+                weapon
+            );
+
+        await saveCachedWeapon(data);
+
+        renderWeaponDetail(data);
+
+        setStatus(
+            `${weapon.name}：WikiWikiから取得`
+        );
+
+    } catch (error) {
+
+        console.error(error);
+
+        detail.innerHTML = `
+            <div class="error-box">
+                <h3>データ取得失敗</h3>
+                <p>
+                    ${escapeHTML(weapon.name)}
+                </p>
+
+                <button
+                    class="retry-button"
+                    id="retryWeapon"
+                >
+                    再取得
+                </button>
+            </div>
+        `;
+
+        document
+            .getElementById("retryWeapon")
+            ?.addEventListener(
+                "click",
+                () => selectWeapon(weapon)
+            );
+    }
+}
+
+/* =========================================================
+   WEAPON PAGE PARSER
+========================================================= */
+
+function parseWeaponPage(text, weapon) {
+
+    const data = {
+
+        name: weapon.name,
+
+        url: weapon.url,
+
+        sub: findValue(
+            text,
+            [
+                "サブウェポン",
+                "サブ"
+            ]
+        ),
+
+        special: findValue(
+            text,
+            [
+                "スペシャルウェポン",
+                "スペシャル"
+            ]
+        ),
+
+        points: findNumber(
+            text,
+            [
+                "必要ポイント",
+                "必要P"
+            ]
+        ),
+
+        range: findNumber(
+            text,
+            [
+                "有効射程"
+            ]
+        ),
+
+        paintRange: findNumber(
+            text,
+            [
+                "塗り射程"
+            ]
+        ),
+
+        damage: findDamage(
+            text
+        ),
+
+        kills: findValue(
+            text,
+            [
+                "確定数"
+            ]
+        ),
+
+        fireFrames: findNumber(
+            text,
+            [
+                "連射フレーム"
+            ]
+        ),
+
+        shotsPerSecond: findNumber(
+            text,
+            [
+                "秒間発射数"
+            ]
+        ),
+
+        killTime: findNumber(
+            text,
+            [
+                "キルタイム"
+            ]
+        ),
+
+        dps: findNumber(
+            text,
+            [
+                "DPS"
+            ]
+        ),
+
+        spread: findNumber(
+            text,
+            [
+                "拡散"
+            ]
+        ),
+
+        jumpSpread: findNumber(
+            text,
+            [
+                "ジャンプ中拡散"
+            ]
+        ),
+
+        reticleRange: findNumber(
+            text,
+            [
+                "レティクル反応距離"
+            ]
+        ),
+
+        blastRadius: findNumber(
+            text,
+            [
+                "爆風半径",
+                "爆風範囲"
+            ]
+        ),
+
+        directDamage: findNumber(
+            text,
+            [
+                "直撃ダメージ"
+            ]
+        ),
+
+        blastDamage: findNumber(
+            text,
+            [
+                "爆風ダメージ"
+            ]
+        ),
+
+        damageRange: findNumber(
+            text,
+            [
+                "ダメージ射程"
+            ]
+        ),
+
+        weight: findValue(
+            text,
+            [
+                "ブキ重量"
+            ]
+        ),
+
+        fetchedAt:
+            Date.now()
+    };
+
+    return data;
+}
+
+/* =========================================================
+   TEXT FIND
+========================================================= */
+
+function normalizeText(text) {
+
+    return text
+        .replace(/\r/g, "")
+        .replace(/&br;/g, " ")
+        .replace(/<br\s*\/?>/gi, " ")
+        .replace(/\{\{/g, "")
+        .replace(/\}\}/g, "")
+        .replace(/\s+/g, " ");
+}
+
+function findValue(text, labels) {
+
+    const normalized =
+        normalizeText(text);
+
+    for (const label of labels) {
+
+        const regex =
+            new RegExp(
+                escapeRegExp(label) +
+                "[^\\n|]{0,100}",
+                "i"
+            );
+
+        const match =
+            normalized.match(regex);
+
+        if (!match) continue;
+
+        let value =
+            match[0]
+                .replace(
+                    new RegExp(
+                        "^.*?" +
+                        escapeRegExp(label),
+                        "i"
+                    ),
+                    ""
+                )
+                .replace(/[|:：]/g, "")
+                .trim();
+
+        if (value) {
+            return value;
+        }
+    }
+
+    return "—";
+}
+
+/* =========================================================
+   NUMBER
+========================================================= */
+
+function findNumber(text, labels) {
+
+    const value =
+        findValue(text, labels);
+
+    const match =
+        value.match(
+            /-?\d+(?:\.\d+)?
+            /x
+        );
+
+    if (!match) {
+        return null;
+    }
+
+    return Number(match[0]);
+}
+
+/* =========================================================
+   DAMAGE
+========================================================= */
+
+function findDamage(text) {
+
+    const value =
+        findValue(
+            text,
+            [
+                "ダメージ"
+            ]
+        );
+
+    const numbers =
+        value.match(
+            /\d+(?:\.\d+)?/g
+        );
+
+    if (!numbers || numbers.length === 0) {
+        return {
+            max: null,
+            min: null,
+            raw: "—"
+        };
+    }
+
+    const nums =
+        numbers.map(Number);
+
+    return {
+        max: Math.max(...nums),
+        min: Math.min(...nums),
+        raw: value
+    };
+}
+
+/* =========================================================
+   DETAIL
+========================================================= */
+
+function renderWeaponDetail(data) {
+
+    const maxDamage =
+        data.damage?.max ?? null;
+
+    const minDamage =
+        data.damage?.min ?? null;
+
+    detail.innerHTML = `
+
+        <div class="weapon-header">
+
+            <div>
+                <div class="detail-label">
+                    WEAPON
+                </div>
+
+                <h2>
+                    ${escapeHTML(data.name)}
+                </h2>
+            </div>
+
+            <button
+                class="cache-delete"
+                id="deleteCache"
+            >
+                キャッシュ削除
+            </button>
+
+        </div>
+
+        <section class="detail-card">
+
+            <h3>基本情報</h3>
+
+            <div class="stat-grid">
+
+                ${stat(
+                    "サブ",
+                    data.sub
+                )}
+
+                ${stat(
+                    "スペシャル",
+                    data.special
+                )}
+
+                ${stat(
+                    "必要ポイント",
+                    formatNumber(data.points, "p")
+                )}
+
+                ${stat(
+                    "ブキ重量",
+                    data.weight
+                )}
+
+            </div>
+
+        </section>
+
+        <section class="detail-card">
+
+            <h3>射程</h3>
+
+            <div class="range-number">
+
+                ${
+                    data.range !== null
+                        ? data.range.toFixed(1)
+                        : "—"
+                }
+
+                <span>
+                    射程
+                </span>
+
+            </div>
+
+            ${createRangeGraph(data)}
+
+        </section>
+
+        <section class="detail-card">
+
+            <h3>ダメージ</h3>
+
+            <div class="damage-values">
+
+                <div>
+                    <strong>
+                        ${
+                            maxDamage !== null
+                                ? maxDamage
+                                : "—"
+                        }
+                    </strong>
+
+                    <span>
+                        最大
+                    </span>
+                </div>
+
+                <div>
+                    <strong>
+                        ${
+                            minDamage !== null
+                                ? minDamage
+                                : "—"
+                        }
+                    </strong>
+
+                    <span>
+                        最小
+                    </span>
+                </div>
+
+            </div>
+
+            ${createDamageGraph(data)}
+
+        </section>
+
+        <section class="detail-card">
+
+            <h3>距離減衰</h3>
+
+            ${createFalloffGraph(data)}
+
+        </section>
+
+        ${
+            hasBlast(data)
+                ? `
+                    <section class="detail-card">
+
+                        <h3>爆風範囲</h3>
+
+                        ${createBlastGraph(data)}
+
+                    </section>
+                  `
+                : ""
+        }
+
+        <section class="detail-card">
+
+            <h3>性能</h3>
+
+            <div class="stat-grid">
+
+                ${stat(
+                    "確定数",
+                    data.kills
+                )}
+
+                ${stat(
+                    "キルタイム",
+                    data.killTime !== null
+                        ? data.killTime + "秒"
+                        : "—"
+                )}
+
+                ${stat(
+                    "連射フレーム",
+                    formatNumber(
+                        data.fireFrames,
+                        "F"
+                    )
+                )}
+
+                ${stat(
+                    "秒間発射数",
+                    formatNumber(
+                        data.shotsPerSecond,
+                        "発"
+                    )
+                )}
+
+                ${stat(
+                    "DPS",
+                    data.dps
+                )}
+
+                ${stat(
+                    "拡散",
+                    data.spread !== null
+                        ? data.spread + "°"
+                        : "—"
+                )}
+
+                ${stat(
+                    "ジャンプ中拡散",
+                    data.jumpSpread !== null
+                        ? data.jumpSpread + "°"
+                        : "—"
+                )}
+
+            </div>
+
+        </section>
+
+        <section class="source-card">
+
+            データ：
+            WikiWiki.jp / splatoon3mix
+
+            <a
+                href="${escapeAttribute(data.url)}"
+                target="_blank"
+                rel="noopener"
+            >
+                WikiWikiで詳細を見る
+            </a>
+
+        </section>
+    `;
+
+    document
+        .getElementById("deleteCache")
+        ?.addEventListener(
+            "click",
+            async () => {
+
+                await deleteCachedWeapon(
+                    data.url
+                );
+
+                setStatus(
+                    `${data.name}のキャッシュを削除しました`
+                );
+            }
+        );
+}
+
+/* =========================================================
+   STAT
+========================================================= */
+
+function stat(label, value) {
+
+    return `
+        <div class="stat">
+
+            <span>
+                ${escapeHTML(label)}
+            </span>
+
+            <strong>
+                ${escapeHTML(
+                    value === null ||
+                    value === undefined
+                        ? "—"
+                        : String(value)
+                )}
+            </strong>
+
+        </div>
+    `;
+}
+
+/* =========================================================
+   RANGE GRAPH
+========================================================= */
+
+function createRangeGraph(data) {
+
+    const range =
+        data.range ?? 0;
+
+    const paint =
+        data.paintRange ?? 0;
+
+    const max =
+        Math.max(
+            6,
+            range,
+            paint
+        );
+
+    const rangeWidth =
+        Math.min(
+            100,
+            range / max * 100
+        );
+
+    const paintWidth =
+        Math.min(
+            100,
+            paint / max * 100
+        );
+
+    const blast =
+        data.blastRadius ?? 0;
+
+    return `
+
+        <div class="range-graph">
+
+            <div class="range-track">
+
+                <div
+                    class="range-paint"
+                    style="width:${paintWidth}%"
+                ></div>
+
+                <div
+                    class="range-main"
+                    style="width:${rangeWidth}%"
+                ></div>
+
+                ${
+                    blast > 0
+                        ? `
+                            <div
+                                class="blast-endpoint"
+                                style="left:${rangeWidth}%"
+                            >
+                                <div
+                                    class="blast-endpoint-circle"
+                                    style="
+                                        width:${Math.max(
+                                            22,
+                                            blast * 40
+                                        )}px;
+                                        height:${Math.max(
+                                            22,
+                                            blast * 40
+                                        )}px;
+                                    "
+                                ></div>
+                            </div>
+                          `
+                        : ""
+                }
+
+            </div>
+
+            <div class="range-scale">
+
+                <span>0</span>
+
+                <span>
+                    ${max.toFixed(1)}
+                </span>
+
+            </div>
+
+            <div class="range-legend">
+
+                <span>
+                    <i class="legend-main"></i>
+                    有効射程
+                </span>
+
+                <span>
+                    <i class="legend-paint"></i>
+                    塗り射程
+                </span>
+
+            </div>
+
+        </div>
+    `;
+}
+
+/* =========================================================
+   DAMAGE GRAPH
+========================================================= */
+
+function createDamageGraph(data) {
+
+    const max =
+        data.damage?.max;
+
+    const min =
+        data.damage?.min;
+
+    if (
+        max === null ||
+        max === undefined
+    ) {
+        return `
+            <div class="empty-box">
+                ダメージデータなし
+            </div>
+        `;
+    }
+
+    const minimum =
+        min ?? max;
+
+    const maxWidth = 100;
+
+    const minWidth =
+        Math.max(
+            0,
+            minimum / max * 100
+        );
+
+    return `
+
+        <div class="damage-graph">
+
+            <div class="damage-row">
+
+                <span>
+                    最大
+                </span>
+
+                <div class="damage-track">
+
+                    <div
+                        class="damage-fill"
+                        style="width:${maxWidth}%"
+                    ></div>
+
+                </div>
+
+                <strong>
+                    ${max}
+                </strong>
+
+            </div>
+
+            <div class="damage-row">
+
+                <span>
+                    最小
+                </span>
+
+                <div class="damage-track">
+
+                    <div
+                        class="damage-fill min"
+                        style="width:${minWidth}%"
+                    ></div>
+
+                </div>
+
+                <strong>
+                    ${minimum}
+                </strong>
+
+            </div>
+
+        </div>
+    `;
+}
+
+/* =========================================================
+   FALLOFF
+========================================================= */
+
+function createFalloffGraph(data) {
+
+    const max =
+        data.damage?.max;
+
+    const min =
+        data.damage?.min;
+
+    const range =
+        data.range;
+
+    if (
+        max === null ||
+        max === undefined ||
+        range === null ||
+        range === undefined
+    ) {
+        return `
+            <div class="empty-box">
+                距離減衰データなし
+            </div>
+        `;
+    }
+
+    const low =
+        min ?? max;
+
+    const points = [];
+
+    for (let i = 0; i <= 10; i++) {
+
+        const x =
+            20 + i * 32;
+
+        const ratio =
+            i / 10;
+
+        const y =
+            25 +
+            ratio * 90;
+
+        points.push(
+            `${x},${y}`
+        );
+    }
+
+    return `
+
+        <div class="falloff-chart">
+
+            <svg
+                viewBox="0 0 340 140"
+                preserveAspectRatio="none"
+            >
+
+                <polyline
+                    points="${points.join(" ")}"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="4"
+                />
+
+            </svg>
+
+            <div class="falloff-label max">
+                ${max}
+            </div>
+
+            <div class="falloff-label min">
+                ${low}
+            </div>
+
+        </div>
+
+        <div class="falloff-axis">
+
+            <span>近距離</span>
+
+            <span>
+                ${range.toFixed(1)}
+            </span>
+
+            <span>遠距離</span>
+
+        </div>
+    `;
+}
+
+/* =========================================================
+   BLAST
+========================================================= */
+
+function hasBlast(data) {
+
+    return (
+        data.blastRadius !== null &&
+        data.blastRadius > 0
+    );
+}
+
+function createBlastGraph(data) {
+
+    const radius =
+        data.blastRadius;
+
+    return `
+
+        <div class="blast-graph">
+
+            <div
+                class="blast-circle"
+                style="
+                    width:${Math.max(
+                        80,
+                        radius * 160
+                    )}px;
+
+                    height:${Math.max(
+                        80,
+                        radius * 160
+                    )}px;
+                "
+            ></div>
+
+            <div class="blast-info">
+
+                <strong>
+                    ${radius} m
+                </strong>
+
+                <span>
+                    爆風半径
+                </span>
+
+                ${
+                    data.blastDamage !== null
+                        ? `
+                            <span>
+                                爆風ダメージ：
+                                ${data.blastDamage}
+                            </span>
+                          `
+                        : ""
+                }
+
+            </div>
+
+        </div>
+    `;
+}
+
+/* =========================================================
+   INDEXED DB
+========================================================= */
+
+function openDB() {
 
     return new Promise(
         (resolve, reject) => {
@@ -71,45 +1561,33 @@ function openDatabase(){
                     DB_VERSION
                 );
 
-
             request.onupgradeneeded =
                 event => {
 
-                    const database =
+                    const db =
                         event.target.result;
 
+                    if (
+                        !db.objectStoreNames
+                            .contains(STORE_NAME)
+                    ) {
 
-                    if(
-                        !database
-                            .objectStoreNames
-                            .contains(
-                                STORE_NAME
-                            )
-                    ){
-
-                        database
-                            .createObjectStore(
-                                STORE_NAME,
-                                {
-                                    keyPath:"id"
-                                }
-                            );
-
+                        db.createObjectStore(
+                            STORE_NAME,
+                            {
+                                keyPath: "url"
+                            }
+                        );
                     }
-
                 };
-
 
             request.onsuccess =
-                () => {
+                event => {
 
-                    db =
-                        request.result;
-
-                    resolve(db);
-
+                    resolve(
+                        event.target.result
+                    );
                 };
-
 
             request.onerror =
                 () => {
@@ -117,18 +1595,19 @@ function openDatabase(){
                     reject(
                         request.error
                     );
-
                 };
-
         }
     );
-
 }
 
+/* =========================================================
+   CACHE GET
+========================================================= */
 
-function getCachedWeapon(
-    id
-){
+async function getCachedWeapon(url) {
+
+    const db =
+        await openDB();
 
     return new Promise(
         (resolve, reject) => {
@@ -139,28 +1618,21 @@ function getCachedWeapon(
                     "readonly"
                 );
 
-
             const store =
-                transaction
-                    .objectStore(
-                        STORE_NAME
-                    );
-
+                transaction.objectStore(
+                    STORE_NAME
+                );
 
             const request =
-                store.get(id);
-
+                store.get(url);
 
             request.onsuccess =
                 () => {
 
                     resolve(
-                        request.result ||
-                        null
+                        request.result || null
                     );
-
                 };
-
 
             request.onerror =
                 () => {
@@ -168,18 +1640,19 @@ function getCachedWeapon(
                     reject(
                         request.error
                     );
-
                 };
-
         }
     );
-
 }
 
+/* =========================================================
+   CACHE SAVE
+========================================================= */
 
-function saveCachedWeapon(
-    weapon
-){
+async function saveCachedWeapon(data) {
+
+    const db =
+        await openDB();
 
     return new Promise(
         (resolve, reject) => {
@@ -190,46 +1663,33 @@ function saveCachedWeapon(
                     "readwrite"
                 );
 
-
             const store =
-                transaction
-                    .objectStore(
-                        STORE_NAME
-                    );
-
-
-            const request =
-                store.put(
-                    weapon
+                transaction.objectStore(
+                    STORE_NAME
                 );
 
+            const request =
+                store.put(data);
 
             request.onsuccess =
-                () => {
-
-                    resolve();
-
-                };
-
+                () => resolve();
 
             request.onerror =
-                () => {
-
-                    reject(
-                        request.error
-                    );
-
-                };
-
+                () => reject(
+                    request.error
+                );
         }
     );
-
 }
 
+/* =========================================================
+   CACHE DELETE
+========================================================= */
 
-function deleteCachedWeapon(
-    id
-){
+async function deleteCachedWeapon(url) {
+
+    const db =
+        await openDB();
 
     return new Promise(
         (resolve, reject) => {
@@ -240,2551 +1700,66 @@ function deleteCachedWeapon(
                     "readwrite"
                 );
 
-
             const store =
-                transaction
-                    .objectStore(
-                        STORE_NAME
-                    );
-
-
-            const request =
-                store.delete(
-                    id
+                transaction.objectStore(
+                    STORE_NAME
                 );
 
-
-            request.onsuccess =
-                () => {
-
-                    resolve();
-
-                };
-
-
-            request.onerror =
-                () => {
-
-                    reject(
-                        request.error
-                    );
-
-                };
-
-        }
-    );
-
-}
-
-
-function getAllCachedWeapons(){
-
-    return new Promise(
-        (resolve, reject) => {
-
-            const transaction =
-                db.transaction(
-                    STORE_NAME,
-                    "readonly"
-                );
-
-
-            const store =
-                transaction
-                    .objectStore(
-                        STORE_NAME
-                    );
-
-
             const request =
-                store.getAll();
-
+                store.delete(url);
 
             request.onsuccess =
-                () => {
-
-                    resolve(
-                        request.result ||
-                        []
-                    );
-
-                };
-
+                () => resolve();
 
             request.onerror =
-                () => {
-
-                    reject(
-                        request.error
-                    );
-
-                };
-
+                () => reject(
+                    request.error
+                );
         }
     );
-
 }
 
+/* =========================================================
+   FORMAT
+========================================================= */
 
-// =========================================================
-// Utilities
-// =========================================================
+function formatNumber(value, suffix = "") {
 
-function clean(
-    value
-){
-
-    if(
-        !value
-    ){
-        return "";
-    }
-
-    return String(value)
-        .replace(
-            /\u00a0/g,
-            " "
-        )
-        .replace(
-            /\s+/g,
-            " "
-        )
-        .trim();
-
-}
-
-
-function normalize(
-    value
-){
-
-    return clean(value)
-        .replace(
-            /\s/g,
-            ""
-        )
-        .toLowerCase();
-
-}
-
-
-function escapeHTML(
-    value
-){
-
-    return String(
-        value ?? ""
-    )
-        .replaceAll(
-            "&",
-            "&amp;"
-        )
-        .replaceAll(
-            "<",
-            "&lt;"
-        )
-        .replaceAll(
-            ">",
-            "&gt;"
-        )
-        .replaceAll(
-            '"',
-            "&quot;"
-        )
-        .replaceAll(
-            "'",
-            "&#039;"
-        );
-
-}
-
-
-function firstNumber(
-    value
-){
-
-    if(
-        !value
-    ){
-        return null;
-    }
-
-    const match =
-        String(value)
-            .replaceAll(
-                ",",
-                ""
-            )
-            .match(
-                /-?\d+(?:\.\d+)?/
-            );
-
-
-    if(
-        !match
-    ){
-        return null;
-    }
-
-    return Number(
-        match[0]
-    );
-
-}
-
-
-function numberRange(
-    value
-){
-
-    if(
-        !value
-    ){
-
-        return {
-            max:null,
-            min:null
-        };
-
-    }
-
-
-    const numbers =
-        String(value)
-            .replaceAll(
-                ",",
-                ""
-            )
-            .match(
-                /-?\d+(?:\.\d+)?/g
-            );
-
-
-    if(
-        !numbers ||
-        numbers.length === 0
-    ){
-
-        return {
-            max:null,
-            min:null
-        };
-
-    }
-
-
-    const values =
-        numbers.map(
-            Number
-        );
-
-
-    if(
-        values.length === 1
-    ){
-
-        return {
-            max:values[0],
-            min:values[0]
-        };
-
-    }
-
-
-    return {
-        max:Math.max(
-            values[0],
-            values[1]
-        ),
-
-        min:Math.min(
-            values[0],
-            values[1]
-        )
-    };
-
-}
-
-
-function formatNumber(
-    value
-){
-
-    if(
+    if (
         value === null ||
         value === undefined ||
-        value === ""
-    ){
+        Number.isNaN(value)
+    ) {
         return "—";
     }
 
-
-    if(
-        typeof value === "number" &&
-        Number.isInteger(value)
-    ){
-
-        return String(value);
-
-    }
-
-
-    return String(value);
-
+    return `${value}${suffix}`;
 }
 
+/* =========================================================
+   ESCAPE
+========================================================= */
 
-// =========================================================
-// Reader
-// =========================================================
+function escapeHTML(value) {
 
-async function fetchWikiPage(
-    url
-){
-
-    const endpoint =
-        READER_API +
-        url;
-
-
-    const response =
-        await fetch(
-            endpoint,
-            {
-                method:"GET",
-
-                headers:{
-                    Accept:"text/plain"
-                },
-
-                cache:"no-store"
-            }
-        );
-
-
-    if(
-        !response.ok
-    ){
-
-        throw new Error(
-            `データ取得失敗 (${response.status})`
-        );
-
-    }
-
-
-    return await response.text();
-
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
 }
 
+function escapeAttribute(value) {
 
-// =========================================================
-// Category loading
-// =========================================================
-
-async function loadCategories(){
-
-    const response =
-        await fetch(
-            "data/categories.json?" +
-            Date.now()
-        );
-
-
-    if(
-        !response.ok
-    ){
-
-        throw new Error(
-            "categories.jsonを読み込めませんでした"
-        );
-
-    }
-
-
-    const data =
-        await response.json();
-
-
-    categories =
-        data.categories ||
-        [];
-
-
-    renderCategories();
-
-    await discoverWeapons();
-
+    return escapeHTML(value);
 }
 
+function escapeRegExp(value) {
 
-// =========================================================
-// Weapon discovery
-// =========================================================
-
-async function discoverWeapons(){
-
-    const discovered =
-        new Map();
-
-
-    dataStatus.textContent =
-        "ブキ一覧を取得中…";
-
-
-    for(
-        const category of categories
-    ){
-
-        try{
-
-            const text =
-                await fetchWikiPage(
-                    category.url
-                );
-
-
-            const links =
-                extractWeaponLinks(
-                    text
-                );
-
-
-            for(
-                const link of links
-            ){
-
-                const id =
-                    createWeaponId(
-                        link.name
-                    );
-
-
-                if(
-                    !discovered.has(
-                        id
-                    )
-                ){
-
-                    discovered.set(
-                        id,
-                        {
-                            id:id,
-
-                            name:
-                                link.name,
-
-                            category:
-                                category.name,
-
-                            url:
-                                link.url,
-
-                            cached:false
-                        }
-                    );
-
-                }
-
-            }
-
-
-        }catch(error){
-
-            console.error(
-                category.name,
-                error
-            );
-
-        }
-
-    }
-
-
-    weapons =
-        Array.from(
-            discovered.values()
-        );
-
-
-    const cached =
-        await getAllCachedWeapons();
-
-
-    const cachedMap =
-        new Map(
-            cached.map(
-                item => [
-                    item.id,
-                    item
-                ]
-            )
-        );
-
-
-    for(
-        const weapon of weapons
-    ){
-
-        weapon.cached =
-            cachedMap.has(
-                weapon.id
-            );
-
-    }
-
-
-    renderWeaponList();
-
-
-    dataStatus.textContent =
-        `${weapons.length}種類のブキ`;
-
-}
-
-
-// =========================================================
-// Extract links
-// =========================================================
-
-function extractWeaponLinks(
-    text
-){
-
-    const result = [];
-
-    const seen =
-        new Set();
-
-
-    const markdownRegex =
-        /\[([^\]]+)\]\((https:\/\/wikiwiki\.jp\/splatoon3mix\/[^)\s]+)\)/g;
-
-
-    let match;
-
-
-    while(
-        (
-            match =
-                markdownRegex.exec(
-                    text
-                )
-        ) !== null
-    ){
-
-        const name =
-            clean(
-                match[1]
-            );
-
-
-        const url =
-            decodeURIComponent(
-                match[2]
-            );
-
-
-        if(
-            !isWeaponPage(
-                url
-            )
-        ){
-            continue;
-        }
-
-
-        const key =
-            normalize(
-                url
-            );
-
-
-        if(
-            seen.has(key)
-        ){
-            continue;
-        }
-
-
-        seen.add(key);
-
-
-        result.push({
-            name:name,
-            url:url
-        });
-
-    }
-
-
-    return result;
-
-}
-
-
-// =========================================================
-// Check weapon page
-// =========================================================
-
-function isWeaponPage(
-    url
-){
-
-    try{
-
-        const parsed =
-            new URL(
-                url
-            );
-
-
-        if(
-            parsed.hostname !==
-            "wikiwiki.jp"
-        ){
-
-            return false;
-
-        }
-
-
-        const path =
-            decodeURIComponent(
-                parsed.pathname
-            );
-
-
-        if(
-            !path.startsWith(
-                "/splatoon3mix/ブキ/"
-            )
-        ){
-
-            return false;
-
-        }
-
-
-        const name =
-            path.split(
-                "/"
-            ).pop();
-
-
-        const excluded = [
-
-            "ブキ",
-
-            "ブキ性能",
-
-            "比較",
-
-            "シューター属",
-
-            "ブラスター属",
-
-            "ローラー属",
-
-            "フデ属",
-
-            "チャージャー属",
-
-            "スロッシャー属",
-
-            "スピナー属",
-
-            "マニューバー属",
-
-            "シェルター属",
-
-            "ストリンガー属",
-
-            "ワイパー属"
-
-        ];
-
-
-        if(
-            excluded.includes(
-                name
-            )
-        ){
-
-            return false;
-
-        }
-
-
-        return true;
-
-
-    }catch{
-
-        return false;
-
-    }
-
-}
-
-
-// =========================================================
-// ID
-// =========================================================
-
-function createWeaponId(
-    name
-){
-
-    return normalize(
-        name
-    )
+    return String(value)
         .replace(
-            /[^a-z0-9ぁ-んァ-ヶ一-龠_-]/gi,
-            "-"
-        )
-        .replace(
-            /-+/g,
-            "-"
+            /[.*+?^${}()|[\]\\]/g,
+            "\\$&"
         );
-
 }
-
-
-// =========================================================
-// Parse weapon
-// =========================================================
-
-function parseWeaponPage(
-    text,
-    baseWeapon
-){
-
-    const lines =
-        text
-            .split("\n")
-            .map(clean)
-            .filter(Boolean);
-
-
-    function findLine(
-        ...labels
-    ){
-
-        for(
-            const line of lines
-        ){
-
-            const normalized =
-                normalize(
-                    line
-                );
-
-
-            for(
-                const label of labels
-            ){
-
-                const target =
-                    normalize(
-                        label
-                    );
-
-
-                if(
-                    normalized.startsWith(
-                        target
-                    )
-                ){
-
-                    let value =
-                        line.substring(
-                            label.length
-                        );
-
-
-                    value =
-                        value
-                            .replace(
-                                /^[：:\s|]+/,
-                                ""
-                            )
-                            .trim();
-
-
-                    if(
-                        value
-                    ){
-
-                        return value;
-
-                    }
-
-                }
-
-            }
-
-        }
-
-
-        return "";
-
-    }
-
-
-    const sub =
-        findLine(
-            "サブウェポン",
-            "サブ"
-        );
-
-
-    const special =
-        findLine(
-            "スペシャルウェポン",
-            "スペシャル"
-        );
-
-
-    const pointsRaw =
-        findLine(
-            "必要ポイント",
-            "スペシャル必要ポイント"
-        );
-
-
-    const weight =
-        findLine(
-            "ブキ重量",
-            "重量"
-        );
-
-
-    const effectiveRaw =
-        findLine(
-            "有効射程"
-        );
-
-
-    const paintRaw =
-        findLine(
-            "塗り射程"
-        );
-
-
-    const damageRaw =
-        findLine(
-            "ダメージ"
-        );
-
-
-    const killsRaw =
-        findLine(
-            "確定数"
-        );
-
-
-    const killTimeRaw =
-        findLine(
-            "キルタイム"
-        );
-
-
-    const fireFrameRaw =
-        findLine(
-            "連射フレーム",
-            "発射フレーム"
-        );
-
-
-    const shotsRaw =
-        findLine(
-            "秒間発射数"
-        );
-
-
-    const dpsRaw =
-        findLine(
-            "DPS"
-        );
-
-
-    const spreadRaw =
-        findLine(
-            "拡散"
-        );
-
-
-    const jumpSpreadRaw =
-        findLine(
-            "ジャンプ中拡散"
-        );
-
-
-    const reticleRaw =
-        findLine(
-            "レティクル反応距離"
-        );
-
-
-    const blastRadiusRaw =
-        findLine(
-            "爆風半径",
-            "爆風範囲"
-        );
-
-
-    const blastDamageRaw =
-        findLine(
-            "爆風ダメージ"
-        );
-
-
-    const directDamageRaw =
-        findLine(
-            "直撃ダメージ",
-            "直接ダメージ"
-        );
-
-
-    const damageRangeRaw =
-        findLine(
-            "ダメージ射程",
-            "爆風射程"
-        );
-
-
-    const effective =
-        numberRange(
-            effectiveRaw
-        );
-
-
-    const paint =
-        numberRange(
-            paintRaw
-        );
-
-
-    const damage =
-        numberRange(
-            damageRaw
-        );
-
-
-    const damageRange =
-        numberRange(
-            damageRangeRaw
-        );
-
-
-    let directDamage =
-        firstNumber(
-            directDamageRaw
-        );
-
-
-    if(
-        directDamage === null &&
-        damage.max !== null
-    ){
-
-        directDamage =
-            damage.max;
-
-    }
-
-
-    const blastDamage =
-        firstNumber(
-            blastDamageRaw
-        );
-
-
-    const blastRadius =
-        firstNumber(
-            blastRadiusRaw
-        );
-
-
-    let blastRange =
-        damageRange.max;
-
-
-    if(
-        blastRange === null &&
-        blastRadius !== null &&
-        effective.max !== null
-    ){
-
-        blastRange =
-            effective.max +
-            blastRadius;
-
-    }
-
-
-    return {
-
-        id:
-            baseWeapon.id,
-
-        name:
-            baseWeapon.name,
-
-        category:
-            baseWeapon.category,
-
-        url:
-            baseWeapon.url,
-
-        cachedAt:
-            Date.now(),
-
-        sub:
-            sub || "不明",
-
-        special:
-            special || "不明",
-
-        specialPoints:
-            firstNumber(
-                pointsRaw
-            ),
-
-        specialPointsRaw:
-            pointsRaw,
-
-        weight:
-            weight,
-
-        range:{
-
-            effective:
-                effective.max,
-
-            paint:
-                paint.max,
-
-            reticle:
-                firstNumber(
-                    reticleRaw
-                ),
-
-            blast:
-                blastRange
-
-        },
-
-        damage:{
-
-            max:
-                damage.max,
-
-            min:
-                damage.min,
-
-            direct:
-                directDamage,
-
-            blast:
-                blastDamage
-
-        },
-
-        kills:
-            killsRaw,
-
-        killTime:
-            firstNumber(
-                killTimeRaw
-            ),
-
-        fireFrame:
-            firstNumber(
-                fireFrameRaw
-            ),
-
-        fireRateRaw:
-            fireFrameRaw,
-
-        shotsPerSecond:
-            firstNumber(
-                shotsRaw
-            ),
-
-        dps:
-            firstNumber(
-                dpsRaw
-            ),
-
-        spread:
-            firstNumber(
-                spreadRaw
-            ),
-
-        jumpSpread:
-            firstNumber(
-                jumpSpreadRaw
-            ),
-
-        blast:{
-
-            range:
-                blastRange,
-
-            radius:
-                blastRadius
-
-        },
-
-        source:
-            baseWeapon.url,
-
-        sourceName:
-            "WikiWiki - Splatoon3 Wiki"
-
-    };
-
-}
-
-
-// =========================================================
-// Select weapon
-// =========================================================
-
-async function selectWeapon(
-    id
-){
-
-    const weapon =
-        weapons.find(
-            item =>
-                item.id === id
-        );
-
-
-    if(
-        !weapon
-    ){
-        return;
-    }
-
-
-    currentWeapon =
-        weapon;
-
-
-    renderLoading(
-        weapon.name
-    );
-
-
-    renderWeaponList();
-
-
-    try{
-
-        const cached =
-            await getCachedWeapon(
-                weapon.id
-            );
-
-
-        if(
-            cached
-        ){
-
-            renderWeapon(
-                cached,
-                true
-            );
-
-            dataStatus.textContent =
-                `${weapons.length}種類のブキ`;
-
-            return;
-
-        }
-
-
-        dataStatus.textContent =
-            `${weapon.name}を取得中…`;
-
-
-        const text =
-            await fetchWikiPage(
-                weapon.url
-            );
-
-
-        const parsed =
-            parseWeaponPage(
-                text,
-                weapon
-            );
-
-
-        await saveCachedWeapon(
-            parsed
-        );
-
-
-        weapon.cached =
-            true;
-
-
-        renderWeapon(
-            parsed,
-            false
-        );
-
-
-        dataStatus.textContent =
-            `${weapons.length}種類のブキ`;
-
-
-    }catch(error){
-
-        console.error(
-            error
-        );
-
-
-        renderError(
-            weapon,
-            error
-        );
-
-    }
-
-}
-
-
-// =========================================================
-// Categories UI
-// =========================================================
-
-function renderCategories(){
-
-    categoriesElement.innerHTML =
-        "";
-
-
-    createCategoryButton(
-        "すべて",
-        "すべて"
-    );
-
-
-    for(
-        const category of categories
-    ){
-
-        createCategoryButton(
-            category.name,
-            category.name
-        );
-
-    }
-
-}
-
-
-function createCategoryButton(
-    label,
-    value
-){
-
-    const button =
-        document.createElement(
-            "button"
-        );
-
-
-    button.type =
-        "button";
-
-
-    button.className =
-        "category-button";
-
-
-    if(
-        currentCategory ===
-        value
-    ){
-
-        button.classList.add(
-            "active"
-        );
-
-    }
-
-
-    button.textContent =
-        label;
-
-
-    button.addEventListener(
-        "click",
-        () => {
-
-            currentCategory =
-                value;
-
-
-            renderCategories();
-
-            renderWeaponList();
-
-        }
-    );
-
-
-    categoriesElement.appendChild(
-        button
-    );
-
-}
-
-
-// =========================================================
-// Weapon list
-// =========================================================
-
-function renderWeaponList(){
-
-    const keyword =
-        normalize(
-            searchInput.value
-        );
-
-
-    const filtered =
-        weapons.filter(
-            weapon => {
-
-                const categoryOK =
-                    currentCategory ===
-                    "すべて"
-                    ||
-                    weapon.category ===
-                    currentCategory;
-
-
-                const searchOK =
-                    !keyword
-                    ||
-                    normalize(
-                        weapon.name
-                    ).includes(
-                        keyword
-                    );
-
-
-                return (
-                    categoryOK &&
-                    searchOK
-                );
-
-            }
-        );
-
-
-    weaponCount.textContent =
-        filtered.length;
-
-
-    weaponList.innerHTML =
-        "";
-
-
-    if(
-        filtered.length === 0
-    ){
-
-        weaponList.innerHTML =
-            `
-            <div class="empty">
-                ブキが見つかりません
-            </div>
-            `;
-
-        return;
-
-    }
-
-
-    for(
-        const weapon of filtered
-    ){
-
-        const button =
-            document.createElement(
-                "button"
-            );
-
-
-        button.type =
-            "button";
-
-
-        button.className =
-            "weapon-button";
-
-
-        if(
-            currentWeapon &&
-            currentWeapon.id ===
-            weapon.id
-        ){
-
-            button.classList.add(
-                "active"
-            );
-
-        }
-
-
-        button.innerHTML =
-            `
-            <span class="weapon-name">
-                ${escapeHTML(
-                    weapon.name
-                )}
-            </span>
-
-            <span class="weapon-meta">
-
-                ${escapeHTML(
-                    weapon.category
-                )}
-
-                ${
-                    weapon.cached
-                        ? "・保存済み"
-                        : ""
-                }
-
-            </span>
-            `;
-
-
-        button.addEventListener(
-            "click",
-            () => {
-
-                selectWeapon(
-                    weapon.id
-                );
-
-            }
-        );
-
-
-        weaponList.appendChild(
-            button
-        );
-
-    }
-
-}
-
-
-// =========================================================
-// Search
-// =========================================================
-
-searchInput.addEventListener(
-    "input",
-    renderWeaponList
-);
-
-
-// =========================================================
-// Loading
-// =========================================================
-
-function renderLoading(
-    name
-){
-
-    detail.innerHTML =
-        `
-        <div class="loading-card">
-
-            <div
-                class="loading-spinner"
-            ></div>
-
-            <h2>
-                ${escapeHTML(
-                    name
-                )}
-            </h2>
-
-            <p>
-                データを取得しています…
-            </p>
-
-        </div>
-        `;
-
-}
-
-
-// =========================================================
-// Error
-// =========================================================
-
-function renderError(
-    weapon,
-    error
-){
-
-    detail.innerHTML =
-        `
-        <div class="error-card">
-
-            <h2>
-                データを取得できませんでした
-            </h2>
-
-            <p>
-                ${escapeHTML(
-                    weapon.name
-                )}
-            </p>
-
-            <small>
-                ${escapeHTML(
-                    error.message
-                )}
-            </small>
-
-            <button
-                id="retryButton"
-                class="retry-button"
-                type="button"
-            >
-                もう一度取得
-            </button>
-
-        </div>
-        `;
-
-
-    $("#retryButton")
-        .addEventListener(
-            "click",
-            () => {
-
-                selectWeapon(
-                    weapon.id
-                );
-
-            }
-        );
-
-}
-
-
-// =========================================================
-// Weapon detail
-// =========================================================
-
-function renderWeapon(
-    weapon,
-    fromCache
-){
-
-    detail.innerHTML =
-        `
-        <div class="detail-grid">
-
-
-            <section
-                class="card weapon-header"
-            >
-
-                <div>
-
-                    <div class="weapon-category">
-                        ${escapeHTML(
-                            weapon.category
-                        )}
-                    </div>
-
-                    <h2>
-                        ${escapeHTML(
-                            weapon.name
-                        )}
-                    </h2>
-
-                </div>
-
-
-                <div class="cache-badge">
-
-                    ${
-                        fromCache
-                            ? "CACHE"
-                            : "NEW"
-                    }
-
-                </div>
-
-            </section>
-
-
-            <section class="card">
-
-                <h3 class="section-title">
-                    ブキ構成
-                </h3>
-
-
-                <div class="kit">
-
-                    <div class="tag">
-
-                        サブ
-
-                        <strong>
-                            ${escapeHTML(
-                                weapon.sub
-                            )}
-                        </strong>
-
-                    </div>
-
-
-                    <div class="tag">
-
-                        スペシャル
-
-                        <strong>
-                            ${escapeHTML(
-                                weapon.special
-                            )}
-                        </strong>
-
-                    </div>
-
-
-                    <div class="tag">
-
-                        必要ポイント
-
-                        <strong>
-                            ${formatNumber(
-                                weapon.specialPoints
-                            )}
-                        </strong>
-
-                    </div>
-
-                </div>
-
-            </section>
-
-
-            <section class="card">
-
-                <h3 class="section-title">
-                    射程
-                </h3>
-
-                ${createRangeGraph(
-                    weapon
-                )}
-
-            </section>
-
-
-            <section class="card">
-
-                <h3 class="section-title">
-                    基本性能
-                </h3>
-
-
-                <div class="stats">
-
-                    ${createStat(
-                        "最大ダメージ",
-                        formatNumber(
-                            weapon.damage?.max
-                        )
-                    )}
-
-
-                    ${createStat(
-                        "最小ダメージ",
-                        formatNumber(
-                            weapon.damage?.min
-                        )
-                    )}
-
-
-                    ${createStat(
-                        "確定数",
-                        weapon.kills || "—"
-                    )}
-
-
-                    ${createStat(
-                        "キルタイム",
-                        weapon.killTime !== null
-                            ? `${weapon.killTime}秒`
-                            : "—"
-                    )}
-
-
-                    ${createStat(
-                        "連射フレーム",
-                        weapon.fireFrame !== null
-                            ? `${weapon.fireFrame}F`
-                            : "—"
-                    )}
-
-
-                    ${createStat(
-                        "秒間発射数",
-                        formatNumber(
-                            weapon.shotsPerSecond
-                        )
-                    )}
-
-
-                    ${createStat(
-                        "DPS",
-                        formatNumber(
-                            weapon.dps
-                        )
-                    )}
-
-
-                    ${createStat(
-                        "重量",
-                        weapon.weight || "—"
-                    )}
-
-                </div>
-
-            </section>
-
-
-            <section class="card">
-
-                <h3 class="section-title">
-                    ダメージ
-                </h3>
-
-                ${createDamageGraph(
-                    weapon
-                )}
-
-            </section>
-
-
-            ${
-                weapon.blast?.radius !== null &&
-                weapon.blast?.radius !== undefined
-                    ?
-                    `
-                    <section class="card">
-
-                        <h3 class="section-title">
-                            爆風範囲
-                        </h3>
-
-                        ${createBlastGraph(
-                            weapon
-                        )}
-
-                    </section>
-                    `
-                    :
-                    ""
-            }
-
-
-            <section class="card">
-
-                <h3 class="section-title">
-                    距離減衰
-                </h3>
-
-                ${createFalloffGraph(
-                    weapon
-                )}
-
-            </section>
-
-
-            <section class="card">
-
-                <h3 class="section-title">
-                    詳細
-                </h3>
-
-
-                <div class="spec-grid">
-
-                    ${createSpec(
-                        "有効射程",
-                        formatNumber(
-                            weapon.range?.effective
-                        )
-                    )}
-
-
-                    ${createSpec(
-                        "塗り射程",
-                        formatNumber(
-                            weapon.range?.paint
-                        )
-                    )}
-
-
-                    ${createSpec(
-                        "レティクル反応距離",
-                        formatNumber(
-                            weapon.range?.reticle
-                        )
-                    )}
-
-
-                    ${createSpec(
-                        "拡散",
-                        weapon.spread !== null
-                            ? `${weapon.spread}°`
-                            : "—"
-                    )}
-
-
-                    ${createSpec(
-                        "ジャンプ中拡散",
-                        weapon.jumpSpread !== null
-                            ? `${weapon.jumpSpread}°`
-                            : "—"
-                    )}
-
-                </div>
-
-            </section>
-
-
-            <section class="card source-card">
-
-                <div>
-
-                    <strong>
-                        データソース
-                    </strong>
-
-                    <p>
-                        WikiWiki
-                    </p>
-
-                </div>
-
-
-                <a
-                    href="${escapeHTML(
-                        weapon.source
-                    )}"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                >
-                    Wikiを開く
-                </a>
-
-            </section>
-
-
-            <button
-                id="clearCacheButton"
-                class="clear-cache-button"
-                type="button"
-            >
-                このブキのキャッシュを削除
-            </button>
-
-
-        </div>
-        `;
-
-
-    $("#clearCacheButton")
-        .addEventListener(
-            "click",
-            async () => {
-
-                await deleteCachedWeapon(
-                    weapon.id
-                );
-
-
-                const base =
-                    weapons.find(
-                        item =>
-                            item.id ===
-                            weapon.id
-                    );
-
-
-                if(
-                    base
-                ){
-
-                    base.cached =
-                        false;
-
-                }
-
-
-                renderWeaponList();
-
-
-                alert(
-                    "キャッシュを削除しました"
-                );
-
-            }
-        );
-
-}
-
-
-// =========================================================
-// Range graph
-// =========================================================
-
-function createRangeGraph(
-    weapon
-){
-
-    const effective =
-        Number(
-            weapon.range?.effective
-        ) || 0;
-
-
-    const paint =
-        Number(
-            weapon.range?.paint
-        ) || 0;
-
-
-    const blast =
-        Number(
-            weapon.blast?.range
-        ) || 0;
-
-
-    const max =
-        Math.max(
-            6,
-            effective,
-            paint,
-            blast
-        );
-
-
-    const effectivePercent =
-        effective /
-        max *
-        100;
-
-
-    const paintPercent =
-        paint /
-        max *
-        100;
-
-
-    return `
-        <div class="range-area">
-
-            <div class="range-axis">
-
-                <span>
-                    0
-                </span>
-
-                <span>
-                    ${max}
-                </span>
-
-            </div>
-
-
-            <div class="range-track">
-
-                <div
-                    class="range-bar"
-                    style="
-                        width:${effectivePercent}%;
-                    "
-                ></div>
-
-
-                <div
-                    class="range-marker effective"
-                    style="
-                        left:${effectivePercent}%;
-                    "
-                >
-
-                    <span>
-                        有効射程
-                        ${formatNumber(
-                            effective
-                        )}
-                    </span>
-
-                </div>
-
-
-                <div
-                    class="range-marker paint"
-                    style="
-                        left:${paintPercent}%;
-                    "
-                >
-
-                    <span>
-                        塗り
-                        ${formatNumber(
-                            paint
-                        )}
-                    </span>
-
-                </div>
-
-            </div>
-
-        </div>
-    `;
-
-}
-
-
-// =========================================================
-// Damage graph
-// =========================================================
-
-function createDamageGraph(
-    weapon
-){
-
-    const values = [];
-
-
-    if(
-        weapon.damage?.max !== null &&
-        weapon.damage?.max !== undefined
-    ){
-
-        values.push({
-            label:"最大",
-            value:
-                weapon.damage.max
-        });
-
-    }
-
-
-    if(
-        weapon.damage?.min !== null &&
-        weapon.damage?.min !== undefined
-    ){
-
-        values.push({
-            label:"最小",
-            value:
-                weapon.damage.min
-        });
-
-    }
-
-
-    if(
-        weapon.damage?.direct !== null &&
-        weapon.damage?.direct !== undefined
-    ){
-
-        values.push({
-            label:"直撃",
-            value:
-                weapon.damage.direct
-        });
-
-    }
-
-
-    if(
-        weapon.damage?.blast !== null &&
-        weapon.damage?.blast !== undefined
-    ){
-
-        values.push({
-            label:"爆風",
-            value:
-                weapon.damage.blast
-        });
-
-    }
-
-
-    if(
-        values.length === 0
-    ){
-
-        return `
-            <div class="note">
-                ダメージデータなし
-            </div>
-        `;
-
-    }
-
-
-    const max =
-        Math.max(
-            100,
-            ...values.map(
-                item =>
-                    item.value
-            )
-        );
-
-
-    return `
-        <div class="damage-list">
-
-            ${
-                values.map(
-                    item => {
-
-                        const width =
-                            item.value /
-                            max *
-                            100;
-
-
-                        return `
-                            <div class="damage-row">
-
-                                <div class="damage-label">
-                                    ${escapeHTML(
-                                        item.label
-                                    )}
-                                </div>
-
-
-                                <div class="damage-track">
-
-                                    <div
-                                        class="damage-fill"
-                                        style="
-                                            width:${width}%;
-                                        "
-                                    ></div>
-
-                                </div>
-
-
-                                <div class="damage-value">
-                                    ${formatNumber(
-                                        item.value
-                                    )}
-                                </div>
-
-                            </div>
-                        `;
-
-                    }
-                ).join("")
-            }
-
-        </div>
-    `;
-
-}
-
-
-// =========================================================
-// Blast graph
-// =========================================================
-
-function createBlastGraph(
-    weapon
-){
-
-    const radius =
-        Number(
-            weapon.blast?.radius
-        ) || 0;
-
-
-    if(
-        radius <= 0
-    ){
-
-        return `
-            <div class="note">
-                爆風データなし
-            </div>
-        `;
-
-    }
-
-
-    const size =
-        Math.max(
-            100,
-            Math.min(
-                220,
-                radius * 180
-            )
-        );
-
-
-    return `
-        <div class="blast-area">
-
-            <div
-                class="blast-circle"
-                style="
-                    width:${size}px;
-                    height:${size}px;
-                "
-            >
-
-                <span>
-                    ${formatNumber(
-                        radius
-                    )}
-                </span>
-
-            </div>
-
-
-            <div class="blast-caption">
-
-                爆風半径
-                ${formatNumber(
-                    radius
-                )}
-
-            </div>
-
-        </div>
-    `;
-
-}
-
-
-// =========================================================
-// Falloff graph
-// =========================================================
-
-function createFalloffGraph(
-    weapon
-){
-
-    const maxDamage =
-        Number(
-            weapon.damage?.max
-        );
-
-
-    const minDamage =
-        Number(
-            weapon.damage?.min
-        );
-
-
-    const range =
-        Number(
-            weapon.range?.effective
-        );
-
-
-    if(
-        !Number.isFinite(
-            maxDamage
-        ) ||
-        !Number.isFinite(
-            minDamage
-        ) ||
-        !Number.isFinite(
-            range
-        ) ||
-        range <= 0
-    ){
-
-        return `
-            <div class="note">
-                距離減衰データなし
-            </div>
-        `;
-
-    }
-
-
-    const width = 360;
-
-    const height = 180;
-
-    const left = 35;
-
-    const right = 15;
-
-    const top = 15;
-
-    const bottom = 30;
-
-
-    const graphWidth =
-        width -
-        left -
-        right;
-
-
-    const graphHeight =
-        height -
-        top -
-        bottom;
-
-
-    const yMax =
-        Math.max(
-            100,
-            maxDamage
-        );
-
-
-    const points = [];
-
-
-    for(
-        let i = 0;
-        i <= 20;
-        i++
-    ){
-
-        const x =
-            i / 20;
-
-
-        const damage =
-            maxDamage +
-            (
-                minDamage -
-                maxDamage
-            ) *
-            x;
-
-
-        const px =
-            left +
-            graphWidth *
-            x;
-
-
-        const py =
-            top +
-            graphHeight *
-            (
-                1 -
-                damage /
-                yMax
-            );
-
-
-        points.push(
-            `${px},${py}`
-        );
-
-    }
-
-
-    return `
-        <div class="chart">
-
-            <svg
-                viewBox="
-                    0 0
-                    ${width}
-                    ${height}
-                "
-                preserveAspectRatio="none"
-            >
-
-                <line
-                    x1="${left}"
-                    y1="${top}"
-                    x2="${left}"
-                    y2="${height - bottom}"
-                    class="chart-axis"
-                />
-
-
-                <line
-                    x1="${left}"
-                    y1="${height - bottom}"
-                    x2="${width - right}"
-                    y2="${height - bottom}"
-                    class="chart-axis"
-                />
-
-
-                <polyline
-                    points="${points.join(" ")}"
-                    class="chart-line"
-                />
-
-            </svg>
-
-
-            <div class="chart-label top">
-                ${formatNumber(
-                    maxDamage
-                )}
-            </div>
-
-
-            <div class="chart-label bottom">
-                ${formatNumber(
-                    minDamage
-                )}
-            </div>
-
-
-            <div class="chart-label right">
-                ${formatNumber(
-                    range
-                )} 射程
-            </div>
-
-        </div>
-    `;
-
-}
-
-
-// =========================================================
-// UI helpers
-// =========================================================
-
-function createStat(
-    label,
-    value
-){
-
-    return `
-        <div class="stat">
-
-            <span class="stat-label">
-                ${escapeHTML(
-                    label
-                )}
-            </span>
-
-
-            <strong class="stat-value">
-                ${escapeHTML(
-                    String(value)
-                )}
-            </strong>
-
-        </div>
-    `;
-
-}
-
-
-function createSpec(
-    label,
-    value
-){
-
-    return `
-        <div class="spec">
-
-            <span>
-                ${escapeHTML(
-                    label
-                )}
-            </span>
-
-
-            <strong>
-                ${escapeHTML(
-                    String(value)
-                )}
-            </strong>
-
-        </div>
-    `;
-
-}
-
-
-// =========================================================
-// Start
-// =========================================================
-
-async function startApp(){
-
-    try{
-
-        dataStatus.textContent =
-            "初期化中…";
-
-
-        await openDatabase();
-
-
-        await loadCategories();
-
-
-    }catch(error){
-
-        console.error(
-            error
-        );
-
-
-        dataStatus.textContent =
-            "読み込みエラー";
-
-
-        detail.innerHTML =
-            `
-            <div class="error-card">
-
-                <h2>
-                    初期化に失敗しました
-                </h2>
-
-                <p>
-                    ${escapeHTML(
-                        error.message
-                    )}
-                </p>
-
-            </div>
-            `;
-
-    }
-
-}
-
-
-startApp();
